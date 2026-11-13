@@ -1,7 +1,5 @@
 import os
-import uuid
 from fastapi import FastAPI, Query, HTTPException
-from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 import yt_dlp
 from dotenv import load_dotenv
@@ -17,48 +15,29 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/download")
-async def download_video(url: str = Query(...), format: str = Query("best")):
+@app.get("/resolve")
+async def resolve_url(url: str = Query(...)):
     try:
-        with yt_dlp.YoutubeDL({'quiet': True, 'skip_download': True}) as ydl:
-            info = ydl.extract_info(url, download=False)
-            title = info.get("title", "video").replace("/", "-").replace("\\", "-")
-            extension = "mp4"
-            filename = f"{title}.{extension}"
-
-        uid = uuid.uuid4().hex[:8]
-        output_template = f"/tmp/{uid}.%(ext)s"
+        # إعدادات yt-dlp لاستخراج الرابط فقط دون تحميل الفيديو
         ydl_opts = {
-            'format': format,
-            'outtmpl': output_template,
             'quiet': True,
-            'merge_output_format': 'mp4',
+            'skip_download': True,
+            'format': 'best[ext=mp4]/best'
         }
-
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
-
-        actual_file_path = None
-        for f in os.listdir("/tmp"):
-            if f.startswith(uid):
-                actual_file_path = os.path.join("/tmp", f)
-                break
-
-        if not actual_file_path or not os.path.exists(actual_file_path):
-            raise HTTPException(status_code=500, detail="Download failed or file not found.")
-
-        def iterfile():
-            with open(actual_file_path, "rb") as f:
-                yield from f
-            os.unlink(actual_file_path)
-
-        return StreamingResponse(
-            iterfile(),
-            media_type="application/octet-stream",
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
-        )
+            info = ydl.extract_info(url, download=False)
+            
+            # محاولة إيجاد الرابط المباشر للفيديو
+            if 'url' in info:
+                return {"direct_url": info['url']}
+            elif 'formats' in info:
+                formats = [f for f in info['formats'] if f.get('vcodec') != 'none']
+                if formats:
+                    return {"direct_url": formats[-1]['url']}
+            
+            raise HTTPException(status_code=400, detail="No direct URL found")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error during download: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/")
 async def root():
